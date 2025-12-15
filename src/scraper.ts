@@ -120,7 +120,7 @@ export async function scrapeIdoxGrants(): Promise<IdoxScrapeResult> {
     
     // Look for "Search for funding" link
     console.log('Looking for Search for funding link...')
-    const searchLink = page.locator('a:has-text("Search for funding"), a:has-text("Search Funding"), a[href*="Search"]')
+    const searchLink = page.locator('a:has-text("Search for funding")').first()
     
     if (await searchLink.isVisible({ timeout: 5000 })) {
       console.log('Navigating to funding search...')
