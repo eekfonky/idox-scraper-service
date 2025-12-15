@@ -167,7 +167,7 @@ export async function scrapeIdoxGrants(): Promise<IdoxScrapeResult> {
 
     // Submit search
     console.log('Submitting search...')
-    const searchButton = page.locator('input[type="submit"][value="Search"], button:has-text("Search"), input[value="Search"]')
+    const searchButton = page.locator('button.siteSearchFilter').first()
     if (await searchButton.isVisible({ timeout: 3000 })) {
       await searchButton.click()
       await page.waitForLoadState('networkidle', { timeout: 30000 })
