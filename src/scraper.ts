@@ -19,7 +19,6 @@ export interface IdoxScrapeResult {
   }
   timestamp: string
   scrapeDurationMs: number
-  debug?: string
 }
 
 // Idox portal configuration
@@ -62,6 +61,9 @@ export async function scrapeIdoxGrants(): Promise<IdoxScrapeResult> {
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     })
     const page = await context.newPage()
+    
+    // Set default timeout for all operations
+    page.setDefaultTimeout(10000)
 
     // Navigate to login page
     console.log('Navigating to Idox portal...')
@@ -83,7 +85,6 @@ export async function scrapeIdoxGrants(): Promise<IdoxScrapeResult> {
     console.log('Logging in...')
     await page.waitForSelector('#LogOnEmail', { timeout: 10000 })
     
-    // Clear and fill fields
     await page.fill('#LogOnEmail', '')
     await page.fill('#LogOnEmail', IDOX_USERNAME)
     await page.fill('#LogOnPassword', '')
@@ -91,34 +92,27 @@ export async function scrapeIdoxGrants(): Promise<IdoxScrapeResult> {
     
     console.log('Clicking login button...')
     
-    // Click login and wait for either navigation OR page content change
     await Promise.all([
       page.click('input[type="submit"][value="Log in"]'),
-      // Wait for either: navigation, URL change, or login form to disappear
       Promise.race([
         page.waitForURL('**/Home**', { timeout: 30000 }).catch(() => null),
-        page.waitForURL('**/Dashboard**', { timeout: 30000 }).catch(() => null),
         page.waitForSelector('a:has-text("Search for funding")', { timeout: 30000 }).catch(() => null),
-        page.waitForSelector('.dashboard', { timeout: 30000 }).catch(() => null),
-        page.waitForTimeout(5000), // Fallback: just wait
+        page.waitForTimeout(5000),
       ])
     ])
     
-    // Check current URL and page state
     const currentUrl = page.url()
     console.log(`Current URL after login: ${currentUrl}`)
     
-    // Check if still on login page (login failed)
     const stillOnLogin = await page.locator('#LogOnEmail').isVisible().catch(() => false)
     if (stillOnLogin) {
-      // Check for error message
-      const errorMsg = await page.locator('.validation-summary-errors, .error-message, .alert-danger').textContent().catch(() => '')
-      throw new Error(`Login failed. Still on login page. Error: ${errorMsg || 'Unknown'}`)
+      const errorMsg = await page.locator('.validation-summary-errors').textContent().catch(() => '')
+      throw new Error(`Login failed. Error: ${errorMsg || 'Unknown'}`)
     }
     
     console.log('Logged in successfully')
     
-    // Look for "Search for funding" link
+    // Navigate to search
     console.log('Looking for Search for funding link...')
     const searchLink = page.locator('a:has-text("Search for funding")').first()
     
@@ -126,58 +120,36 @@ export async function scrapeIdoxGrants(): Promise<IdoxScrapeResult> {
       console.log('Navigating to funding search...')
       await searchLink.click()
       await page.waitForLoadState('networkidle', { timeout: 30000 })
-    } else {
-      // Try direct navigation to search page
-      console.log('Search link not found, trying direct navigation...')
-      await page.goto('https://funding.idoxopen4community.co.uk/bca/Search', { 
-        waitUntil: 'networkidle', 
-        timeout: 30000 
-      })
     }
 
     console.log(`Now at: ${page.url()}`)
 
-    // Apply status filters
-    console.log('Applying status filters...')
+    // Apply filters (optional, skip if not found)
+    console.log('Applying filters...')
     for (const status of STATUS_FILTERS) {
       try {
-        const checkbox = page.locator(`input[type="checkbox"][value="${status}"], label:has-text("${status}") input`)
-        if (await checkbox.isVisible({ timeout: 2000 })) {
-          await checkbox.check()
-          console.log(`  Checked: ${status}`)
-        }
-      } catch {
-        console.log(`  Skipped: ${status} (not found)`)
-      }
-    }
-
-    // Apply area of work filters
-    console.log('Applying area of work filters...')
-    for (const area of AREA_OF_WORK_FILTERS) {
-      try {
-        const checkbox = page.locator(`input[type="checkbox"][value="${area}"], label:has-text("${area}") input`)
+        const checkbox = page.locator(`label:has-text("${status}") input`).first()
         if (await checkbox.isVisible({ timeout: 1000 })) {
           await checkbox.check()
-          console.log(`  Checked: ${area}`)
         }
-      } catch {
-        // Skip silently
-      }
+      } catch { /* skip */ }
     }
 
     // Submit search
     console.log('Submitting search...')
-    const searchButton = page.locator('button.siteSearchFilter').first()
-    if (await searchButton.isVisible({ timeout: 3000 })) {
-      await searchButton.click()
-      await page.waitForLoadState('networkidle', { timeout: 30000 })
-    }
+    try {
+      const searchButton = page.locator('button.siteSearchFilter').first()
+      if (await searchButton.isVisible({ timeout: 2000 })) {
+        await searchButton.click()
+        await page.waitForLoadState('networkidle', { timeout: 30000 })
+      }
+    } catch { /* continue without clicking */ }
 
     console.log(`Search results at: ${page.url()}`)
 
-    // Extract grants
+    // Extract grants using simple approach
     console.log('Extracting grants...')
-    const grants = await extractGrants(page)
+    const grants = await extractGrantsSimple(page)
 
     const duration = Date.now() - startTime
     console.log(`Scrape complete in ${duration}ms - found ${grants.length} grants`)
@@ -199,87 +171,56 @@ export async function scrapeIdoxGrants(): Promise<IdoxScrapeResult> {
   }
 }
 
-async function extractGrants(page: Page): Promise<IdoxGrant[]> {
+// Simplified extraction that won't hang
+async function extractGrantsSimple(page: Page): Promise<IdoxGrant[]> {
   const grants: IdoxGrant[] = []
 
-  // Try multiple selector patterns for grant listings
-  const selectors = [
-    '.scheme-card',
-    '.funding-item', 
-    'tr.scheme-row',
-    '.search-result',
-    '.grant-item',
-    'article.scheme',
-    '[data-scheme-id]',
-    '.list-group-item:has(a[href*="/Scheme/"])',
-  ]
-
-  let grantElements: any[] = []
-  
-  for (const selector of selectors) {
-    const elements = await page.locator(selector).all()
-    if (elements.length > 0) {
-      console.log(`Found ${elements.length} grants with selector: ${selector}`)
-      grantElements = elements
-      break
-    }
-  }
-
-  // If no specific selectors work, try finding any links to scheme pages
-  if (grantElements.length === 0) {
-    console.log('No grant elements found with standard selectors, looking for scheme links...')
-    const schemeLinks = await page.locator('a[href*="/Scheme/View/"]').all()
-    console.log(`Found ${schemeLinks.length} scheme links`)
+  // Use evaluate to extract directly in browser context - much faster and won't hang
+  const grantData = await page.evaluate(() => {
+    const results: Array<{title: string, link: string, funder: string, deadline: string}> = []
     
-    for (const link of schemeLinks) {
-      try {
-        const title = await link.textContent() || ''
-        const href = await link.getAttribute('href') || ''
+    // Find all scheme links
+    const links = document.querySelectorAll('a[href*="/Scheme/View/"]')
+    
+    links.forEach(link => {
+      const title = link.textContent?.trim() || ''
+      const href = link.getAttribute('href') || ''
+      
+      // Try to find parent container for more info
+      const container = link.closest('.list-group-item, .scheme-card, article, tr')
+      let funder = ''
+      let deadline = ''
+      
+      if (container) {
+        // Look for funder/organisation text
+        const funderEl = container.querySelector('.funder, .organisation, [class*="funder"]')
+        if (funderEl) funder = funderEl.textContent?.trim() || ''
         
-        if (title.trim() && href) {
-          grants.push({
-            title: title.trim(),
-            funder: '',
-            maxAmount: '',
-            deadline: '',
-            status: '',
-            link: href.startsWith('http') ? href : `https://funding.idoxopen4community.co.uk${href}`,
-            areaOfWork: '',
-          })
-        }
-      } catch (err) {
-        console.warn('Error extracting scheme link:', err)
+        // Look for deadline text
+        const deadlineEl = container.querySelector('.deadline, .closing, [class*="deadline"]')
+        if (deadlineEl) deadline = deadlineEl.textContent?.trim() || ''
       }
-    }
+      
+      if (title && href) {
+        results.push({ title, link: href, funder, deadline })
+      }
+    })
     
-    return grants
-  }
+    return results
+  })
 
-  for (const element of grantElements) {
-    try {
-      const title = await element.locator('.scheme-title, h3, .title, a').first().textContent() || ''
-      const funder = await element.locator('.funder, .organisation, .provider').textContent().catch(() => '')
-      const maxAmount = await element.locator('.amount, .max-amount, .funding-amount').textContent().catch(() => '')
-      const deadline = await element.locator('.deadline, .closing-date, .end-date').textContent().catch(() => '')
-      const status = await element.locator('.status, .scheme-status').textContent().catch(() => '')
-      const linkElement = element.locator('a[href*="/Scheme/"]').first()
-      const link = await linkElement.getAttribute('href').catch(() => '') || ''
-      const areaOfWork = await element.locator('.area-of-work, .category, .tags').textContent().catch(() => '')
+  console.log(`Extracted ${grantData.length} grants via page.evaluate`)
 
-      if (title.trim()) {
-        grants.push({
-          title: title.trim(),
-          funder: funder?.trim() || '',
-          maxAmount: maxAmount?.trim() || '',
-          deadline: deadline?.trim() || '',
-          status: status?.trim() || '',
-          link: link.startsWith('http') ? link : `https://funding.idoxopen4community.co.uk${link}`,
-          areaOfWork: areaOfWork?.trim() || '',
-        })
-      }
-    } catch (err) {
-      console.warn('Error extracting grant:', err)
-    }
+  for (const data of grantData) {
+    grants.push({
+      title: data.title,
+      funder: data.funder,
+      maxAmount: '',
+      deadline: data.deadline,
+      status: '',
+      link: data.link.startsWith('http') ? data.link : `https://funding.idoxopen4community.co.uk${data.link}`,
+      areaOfWork: '',
+    })
   }
 
   return grants
