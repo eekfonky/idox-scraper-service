@@ -259,39 +259,38 @@ async function extractGrantsSimple(page: Page): Promise<IdoxGrant[]> {
 
     allGrants.push(...pageGrants)
 
-    // Check for next page link using multiple strategies
-    // When logged in, pagination is in ul.pagination#pagerbottom (not nav element)
-    // Links use onclick="showResults(pageNum, true, 'Y')" for AJAX pagination
-    let nextLink = page.locator('ul.pagination a').filter({ hasText: 'Next' }).first()
+    // Check for next page - click directly on page number instead of "Next" link
+    // When logged in, pagination is in ul.pagination#pagerbottom
+    // Each page link uses onclick="showResults(pageNum, true, 'Y')"
+    const nextPageNum = currentPage + 1
+
+    // Look for a link with the next page number as its text
+    let nextLink = page.locator(`ul.pagination a.page-link`).filter({ hasText: new RegExp(`^${nextPageNum}$`) }).first()
     let hasNext = await nextLink.isVisible({ timeout: 3000 }).catch(() => false)
 
-    // Fallback 1: try #pagerbottom selector
+    // Fallback: try finding by title attribute
     if (!hasNext) {
-      nextLink = page.locator('#pagerbottom a').filter({ hasText: 'Next' }).first()
-      hasNext = await nextLink.isVisible({ timeout: 2000 }).catch(() => false)
-    }
-
-    // Fallback 2: any link with "Next" text
-    if (!hasNext) {
-      nextLink = page.locator('a.page-link').filter({ hasText: 'Next' }).first()
+      nextLink = page.locator(`a[title*="page ${nextPageNum}"]`).first()
       hasNext = await nextLink.isVisible({ timeout: 2000 }).catch(() => false)
     }
 
     // Debug: log what we found
     if (!hasNext) {
-      console.log('No Next link found. Checking pagination HTML...')
+      console.log(`No link to page ${nextPageNum} found. Checking pagination HTML...`)
       const paginationHtml = await page.evaluate(() => {
         const ul = document.querySelector('ul.pagination, #pagerbottom')
-        return ul ? ul.innerHTML.substring(0, 800) : 'No pagination found'
+        return ul ? ul.innerHTML : 'No pagination found'
       })
-      console.log(`Pagination HTML: ${paginationHtml}`)
+      console.log(`Pagination HTML (${paginationHtml.length} chars): ${paginationHtml.substring(0, 1000)}`)
       console.log('No more pages')
       break
     }
 
+    console.log(`Found link to page ${nextPageNum}`)
+
     // Get current first grant title to detect page change
     const firstGrantTitle = pageGrants[0]?.title || ''
-    console.log(`Clicking Next (current first grant: "${firstGrantTitle.substring(0, 30)}...")`)
+    console.log(`Clicking page ${nextPageNum} (current first grant: "${firstGrantTitle.substring(0, 30)}...")`)
 
     // Click next - this triggers JavaScript/AJAX
     await nextLink.click()
