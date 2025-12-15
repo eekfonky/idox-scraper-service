@@ -260,14 +260,20 @@ async function extractGrantsSimple(page: Page): Promise<IdoxGrant[]> {
     allGrants.push(...pageGrants)
 
     // Check for next page link using multiple strategies
-    // The link contains "Next" text and uses href="#" for JavaScript navigation
-    let nextLink = page.locator('nav[aria-label="Page navigation"] a').filter({ hasText: 'Next' }).first()
+    // When logged in, pagination is in ul.pagination#pagerbottom (not nav element)
+    // Links use onclick="showResults(pageNum, true, 'Y')" for AJAX pagination
+    let nextLink = page.locator('ul.pagination a').filter({ hasText: 'Next' }).first()
     let hasNext = await nextLink.isVisible({ timeout: 3000 }).catch(() => false)
 
-    // Fallback: try looking for any "Next" link in pagination area
+    // Fallback 1: try #pagerbottom selector
     if (!hasNext) {
-      console.log('Primary selector failed, trying fallback...')
-      nextLink = page.locator('a').filter({ hasText: /Next/ }).first()
+      nextLink = page.locator('#pagerbottom a').filter({ hasText: 'Next' }).first()
+      hasNext = await nextLink.isVisible({ timeout: 2000 }).catch(() => false)
+    }
+
+    // Fallback 2: any link with "Next" text
+    if (!hasNext) {
+      nextLink = page.locator('a.page-link').filter({ hasText: 'Next' }).first()
       hasNext = await nextLink.isVisible({ timeout: 2000 }).catch(() => false)
     }
 
@@ -275,8 +281,8 @@ async function extractGrantsSimple(page: Page): Promise<IdoxGrant[]> {
     if (!hasNext) {
       console.log('No Next link found. Checking pagination HTML...')
       const paginationHtml = await page.evaluate(() => {
-        const nav = document.querySelector('nav[aria-label="Page navigation"]')
-        return nav ? nav.innerHTML.substring(0, 500) : 'No pagination nav found'
+        const ul = document.querySelector('ul.pagination, #pagerbottom')
+        return ul ? ul.innerHTML.substring(0, 800) : 'No pagination found'
       })
       console.log(`Pagination HTML: ${paginationHtml}`)
       console.log('No more pages')
