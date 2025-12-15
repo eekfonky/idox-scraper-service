@@ -1,0 +1,41 @@
+# Idox Scraper Service for West Linton Play Park
+# SECURED with API key authentication
+# December 2025
+#
+# HTTPS via Traefik: https://idox-scraper.srv925321.hstgr.cloud
+
+name: idox-scraper
+
+services:
+  scraper:
+    build: .
+    ports:
+      - "127.0.0.1:3003:3003"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.idox-scraper.rule=Host(`idox-scraper.srv925321.hstgr.cloud`)"
+      - "traefik.http.routers.idox-scraper.tls=true"
+      - "traefik.http.routers.idox-scraper.entrypoints=web,websecure"
+      - "traefik.http.routers.idox-scraper.tls.certresolver=mytlschallenge"
+      - "traefik.http.services.idox-scraper.loadbalancer.server.port=3003"
+    environment:
+      PORT: 3003
+      # API key for authentication (change in production!)
+      IDOX_SCRAPER_API_KEY: "idox-scraper-wlpp-2025-secure-key-p4n8q1"
+      # Idox portal credentials (set these!)
+      IDOX_USERNAME: "${IDOX_USERNAME}"
+      IDOX_PASSWORD: "${IDOX_PASSWORD}"
+    networks:
+      - traefik_network
+    restart: unless-stopped
+    mem_limit: 2G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  traefik_network:
+    external: true
+    name: root_default
