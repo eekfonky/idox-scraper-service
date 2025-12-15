@@ -279,7 +279,7 @@ async function extractGrantsSimple(page: Page): Promise<IdoxGrant[]> {
     if (!hasNext) {
       console.log(`getByRole failed, trying evaluate...`)
       const linkExists = await page.evaluate((pageNum) => {
-        const links = document.querySelectorAll('ul.pagination a')
+        const links = Array.from(document.querySelectorAll('ul.pagination a'))
         for (const link of links) {
           if (link.textContent?.trim() === String(pageNum)) {
             return true
@@ -291,7 +291,7 @@ async function extractGrantsSimple(page: Page): Promise<IdoxGrant[]> {
       if (linkExists) {
         // If link exists but locators failed, click via evaluate
         await page.evaluate((pageNum) => {
-          const links = document.querySelectorAll('ul.pagination a')
+          const links = Array.from(document.querySelectorAll('ul.pagination a'))
           for (const link of links) {
             if (link.textContent?.trim() === String(pageNum)) {
               (link as HTMLElement).click()
