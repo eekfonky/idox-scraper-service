@@ -238,6 +238,17 @@ async function extractGrantsSimple(page: Page): Promise<IdoxGrant[]> {
   const MAX_PAGES = 60 // Safety limit (600 grants max)
   let currentPage = 1
 
+  // First, check the page info to see total pages available
+  const pageInfo = await page.evaluate(() => {
+    const text = document.body.innerText
+    const match = text.match(/Page (\d+) of (\d+)/)
+    return match ? { current: parseInt(match[1]), total: parseInt(match[2]) } : null
+  })
+
+  if (pageInfo) {
+    console.log(`Page info: Page ${pageInfo.current} of ${pageInfo.total} (${pageInfo.total * 10} estimated grants)`)
+  }
+
   while (currentPage <= MAX_PAGES) {
     console.log(`Extracting page ${currentPage}...`)
 
@@ -248,32 +259,54 @@ async function extractGrantsSimple(page: Page): Promise<IdoxGrant[]> {
 
     allGrants.push(...pageGrants)
 
-    // Check for next page link (uses JavaScript href="#")
-    const nextLink = page.locator('nav[aria-label="Page navigation"] a:has-text("Next »")').first()
-    const hasNext = await nextLink.isVisible({ timeout: 2000 }).catch(() => false)
+    // Check for next page link using multiple strategies
+    // The link contains "Next" text and uses href="#" for JavaScript navigation
+    let nextLink = page.locator('nav[aria-label="Page navigation"] a').filter({ hasText: 'Next' }).first()
+    let hasNext = await nextLink.isVisible({ timeout: 3000 }).catch(() => false)
 
+    // Fallback: try looking for any "Next" link in pagination area
     if (!hasNext) {
+      console.log('Primary selector failed, trying fallback...')
+      nextLink = page.locator('a').filter({ hasText: /Next/ }).first()
+      hasNext = await nextLink.isVisible({ timeout: 2000 }).catch(() => false)
+    }
+
+    // Debug: log what we found
+    if (!hasNext) {
+      console.log('No Next link found. Checking pagination HTML...')
+      const paginationHtml = await page.evaluate(() => {
+        const nav = document.querySelector('nav[aria-label="Page navigation"]')
+        return nav ? nav.innerHTML.substring(0, 500) : 'No pagination nav found'
+      })
+      console.log(`Pagination HTML: ${paginationHtml}`)
       console.log('No more pages')
       break
     }
 
     // Get current first grant title to detect page change
     const firstGrantTitle = pageGrants[0]?.title || ''
+    console.log(`Clicking Next (current first grant: "${firstGrantTitle.substring(0, 30)}...")`)
 
     // Click next - this triggers JavaScript/AJAX
     await nextLink.click()
 
     // Wait for content to change (first grant title should be different)
     // The pagination uses AJAX, so we need to wait for DOM update
-    await page.waitForFunction(
-      (oldTitle: string) => {
-        const newFirstLink = document.querySelector('main li a[href*="/Scheme/View/"]')
-        const newTitle = newFirstLink?.textContent?.trim() || ''
-        return newTitle !== oldTitle && newTitle.length > 0
-      },
-      firstGrantTitle,
-      { timeout: 15000 }
-    )
+    try {
+      await page.waitForFunction(
+        (oldTitle: string) => {
+          const newFirstLink = document.querySelector('main li a[href*="/Scheme/View/"]')
+          const newTitle = newFirstLink?.textContent?.trim() || ''
+          return newTitle !== oldTitle && newTitle.length > 0
+        },
+        firstGrantTitle,
+        { timeout: 15000 }
+      )
+    } catch (err) {
+      console.log(`Page change detection failed: ${err}`)
+      // Try waiting a bit and check if page actually changed
+      await page.waitForTimeout(2000)
+    }
 
     // Small delay to ensure all content is loaded
     await page.waitForTimeout(500)
