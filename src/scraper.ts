@@ -264,14 +264,62 @@ async function extractGrantsSimple(page: Page): Promise<IdoxGrant[]> {
     // Each page link uses onclick="showResults(pageNum, true, 'Y')"
     const nextPageNum = currentPage + 1
 
-    // Look for a link with the next page number as its text
-    let nextLink = page.locator(`ul.pagination a.page-link`).filter({ hasText: new RegExp(`^${nextPageNum}$`) }).first()
+    // Look for a link with the next page number using title attribute (most reliable)
+    let nextLink = page.locator(`a[title="Click to go to page ${nextPageNum} of results"]`).first()
     let hasNext = await nextLink.isVisible({ timeout: 3000 }).catch(() => false)
 
-    // Fallback: try finding by title attribute
+    // Fallback: try getByRole with exact name
     if (!hasNext) {
-      nextLink = page.locator(`a[title*="page ${nextPageNum}"]`).first()
+      console.log(`Title selector failed, trying getByRole...`)
+      nextLink = page.getByRole('link', { name: String(nextPageNum), exact: true })
       hasNext = await nextLink.isVisible({ timeout: 2000 }).catch(() => false)
+    }
+
+    // Fallback 2: use evaluate to find and return element
+    if (!hasNext) {
+      console.log(`getByRole failed, trying evaluate...`)
+      const linkExists = await page.evaluate((pageNum) => {
+        const links = document.querySelectorAll('ul.pagination a')
+        for (const link of links) {
+          if (link.textContent?.trim() === String(pageNum)) {
+            return true
+          }
+        }
+        return false
+      }, nextPageNum)
+
+      if (linkExists) {
+        // If link exists but locators failed, click via evaluate
+        await page.evaluate((pageNum) => {
+          const links = document.querySelectorAll('ul.pagination a')
+          for (const link of links) {
+            if (link.textContent?.trim() === String(pageNum)) {
+              (link as HTMLElement).click()
+              return
+            }
+          }
+        }, nextPageNum)
+        console.log(`Clicked page ${nextPageNum} via evaluate`)
+
+        // Wait for content to change
+        const firstGrantTitle = pageGrants[0]?.title || ''
+        try {
+          await page.waitForFunction(
+            (oldTitle: string) => {
+              const newFirstLink = document.querySelector('main li a[href*="/Scheme/View/"]')
+              const newTitle = newFirstLink?.textContent?.trim() || ''
+              return newTitle !== oldTitle && newTitle.length > 0
+            },
+            firstGrantTitle,
+            { timeout: 15000 }
+          )
+        } catch {
+          await page.waitForTimeout(2000)
+        }
+        await page.waitForTimeout(500)
+        currentPage++
+        continue
+      }
     }
 
     // Debug: log what we found
