@@ -171,57 +171,98 @@ export async function scrapeIdoxGrants(): Promise<IdoxScrapeResult> {
   }
 }
 
-// Simplified extraction that won't hang
-async function extractGrantsSimple(page: Page): Promise<IdoxGrant[]> {
-  const grants: IdoxGrant[] = []
-
-  // Use evaluate to extract directly in browser context - much faster and won't hang
+// Extract grants from current page with full details
+async function extractGrantsFromPage(page: Page): Promise<IdoxGrant[]> {
   const grantData = await page.evaluate(() => {
-    const results: Array<{title: string, link: string, funder: string, deadline: string}> = []
-    
-    // Find all scheme links
-    const links = document.querySelectorAll('a[href*="/Scheme/View/"]')
-    
-    links.forEach(link => {
-      const title = link.textContent?.trim() || ''
-      const href = link.getAttribute('href') || ''
-      
-      // Try to find parent container for more info
-      const container = link.closest('.list-group-item, .scheme-card, article, tr')
-      let funder = ''
+    const results: Array<{
+      title: string
+      link: string
+      funder: string
+      deadline: string
+      status: string
+      maxAmount: string
+    }> = []
+
+    // Each grant is in a listitem containing the grant card
+    const items = document.querySelectorAll('main li')
+
+    items.forEach(item => {
+      // Find the title link
+      const titleLink = item.querySelector('a[href*="/Scheme/View/"]')
+      if (!titleLink) return
+
+      const title = titleLink.textContent?.trim() || ''
+      const href = titleLink.getAttribute('href') || ''
+
+      // Find funder - in paragraph after the heading
+      const funderEl = item.querySelector('h3 + p')
+      const funder = funderEl?.textContent?.trim() || ''
+
+      // Find status, max value, deadline from definition lists
+      let status = ''
+      let maxAmount = ''
       let deadline = ''
-      
-      if (container) {
-        // Look for funder/organisation text
-        const funderEl = container.querySelector('.funder, .organisation, [class*="funder"]')
-        if (funderEl) funder = funderEl.textContent?.trim() || ''
-        
-        // Look for deadline text
-        const deadlineEl = container.querySelector('.deadline, .closing, [class*="deadline"]')
-        if (deadlineEl) deadline = deadlineEl.textContent?.trim() || ''
-      }
-      
+
+      const terms = item.querySelectorAll('dt')
+      terms.forEach(term => {
+        const label = term.textContent?.trim() || ''
+        const value = term.nextElementSibling?.textContent?.trim() || ''
+
+        if (label === 'Status') status = value
+        else if (label === 'Maximum value') maxAmount = value
+        else if (label === 'Current deadline') deadline = value
+      })
+
       if (title && href) {
-        results.push({ title, link: href, funder, deadline })
+        results.push({ title, link: href, funder, deadline, status, maxAmount })
       }
     })
-    
+
     return results
   })
 
-  console.log(`Extracted ${grantData.length} grants via page.evaluate`)
+  return grantData.map(data => ({
+    title: data.title,
+    funder: data.funder,
+    maxAmount: data.maxAmount,
+    deadline: data.deadline,
+    status: data.status,
+    link: data.link.startsWith('http') ? data.link : `https://funding.idoxopen4community.co.uk${data.link}`,
+    areaOfWork: '',
+  }))
+}
 
-  for (const data of grantData) {
-    grants.push({
-      title: data.title,
-      funder: data.funder,
-      maxAmount: '',
-      deadline: data.deadline,
-      status: '',
-      link: data.link.startsWith('http') ? data.link : `https://funding.idoxopen4community.co.uk${data.link}`,
-      areaOfWork: '',
-    })
+// Extract grants with pagination support
+async function extractGrantsSimple(page: Page): Promise<IdoxGrant[]> {
+  const allGrants: IdoxGrant[] = []
+  const MAX_PAGES = 60 // Safety limit (600 grants max)
+  let currentPage = 1
+
+  while (currentPage <= MAX_PAGES) {
+    console.log(`Extracting page ${currentPage}...`)
+
+    const pageGrants = await extractGrantsFromPage(page)
+    console.log(`Found ${pageGrants.length} grants on page ${currentPage}`)
+
+    if (pageGrants.length === 0) break
+
+    allGrants.push(...pageGrants)
+
+    // Check for next page link
+    const nextLink = page.locator('a:has-text("Next »")').first()
+    const hasNext = await nextLink.isVisible({ timeout: 2000 }).catch(() => false)
+
+    if (!hasNext) {
+      console.log('No more pages')
+      break
+    }
+
+    // Click next and wait for page to load
+    await nextLink.click()
+    await page.waitForLoadState('networkidle', { timeout: 30000 })
+    currentPage++
   }
 
-  return grants
+  console.log(`Total grants extracted: ${allGrants.length}`)
+  return allGrants
 }
