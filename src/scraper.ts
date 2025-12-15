@@ -248,8 +248,8 @@ async function extractGrantsSimple(page: Page): Promise<IdoxGrant[]> {
 
     allGrants.push(...pageGrants)
 
-    // Check for next page link
-    const nextLink = page.locator('a:has-text("Next »")').first()
+    // Check for next page link (uses JavaScript href="#")
+    const nextLink = page.locator('nav[aria-label="Page navigation"] a:has-text("Next »")').first()
     const hasNext = await nextLink.isVisible({ timeout: 2000 }).catch(() => false)
 
     if (!hasNext) {
@@ -257,9 +257,26 @@ async function extractGrantsSimple(page: Page): Promise<IdoxGrant[]> {
       break
     }
 
-    // Click next and wait for page to load
+    // Get current first grant title to detect page change
+    const firstGrantTitle = pageGrants[0]?.title || ''
+
+    // Click next - this triggers JavaScript/AJAX
     await nextLink.click()
-    await page.waitForLoadState('networkidle', { timeout: 30000 })
+
+    // Wait for content to change (first grant title should be different)
+    // The pagination uses AJAX, so we need to wait for DOM update
+    await page.waitForFunction(
+      (oldTitle: string) => {
+        const newFirstLink = document.querySelector('main li a[href*="/Scheme/View/"]')
+        const newTitle = newFirstLink?.textContent?.trim() || ''
+        return newTitle !== oldTitle && newTitle.length > 0
+      },
+      firstGrantTitle,
+      { timeout: 15000 }
+    )
+
+    // Small delay to ensure all content is loaded
+    await page.waitForTimeout(500)
     currentPage++
   }
 
