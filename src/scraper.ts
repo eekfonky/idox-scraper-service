@@ -32,6 +32,14 @@ export interface ScrapeOptions {
   enrich?: boolean
 }
 
+// Progress event types for SSE streaming
+export interface ProgressEvent {
+  type: 'phase' | 'progress' | 'grant' | 'page'
+  data: Record<string, unknown> | IdoxGrant
+}
+
+export type ProgressCallback = (event: ProgressEvent) => void
+
 /**
  * Sanitize text by removing HTML artifacts and normalizing whitespace
  * Pure string processing - no AI needed
@@ -417,13 +425,30 @@ async function extractGrantsSimple(page: Page): Promise<IdoxGrant[]> {
 }
 
 // Enrich grants by scraping their detail pages
-async function enrichGrants(page: Page, grants: IdoxGrant[]): Promise<IdoxGrant[]> {
+// Optional progress callback for SSE streaming
+async function enrichGrants(
+  page: Page,
+  grants: IdoxGrant[],
+  onProgress?: ProgressCallback
+): Promise<IdoxGrant[]> {
   const enrichedGrants: IdoxGrant[] = []
   const totalGrants = grants.length
 
   for (let i = 0; i < grants.length; i++) {
     const grant = grants[i]
     const progress = `[${i + 1}/${totalGrants}]`
+
+    // Emit progress event for SSE
+    onProgress?.({
+      type: 'progress',
+      data: {
+        phase: 'enriching',
+        current: i + 1,
+        total: totalGrants,
+        grantTitle: grant.title.substring(0, 60),
+        percentage: Math.round(((i + 1) / totalGrants) * 100),
+      },
+    })
 
     try {
       console.log(`${progress} Enriching: ${grant.title.substring(0, 50)}...`)
@@ -513,7 +538,7 @@ async function enrichGrants(page: Page, grants: IdoxGrant[]): Promise<IdoxGrant[
       })
 
       // Apply sanitization to clean up HTML artifacts
-      enrichedGrants.push({
+      const enrichedGrant: IdoxGrant = {
         ...grant,
         description: sanitizeText(details.description) || undefined,
         eligibility: sanitizeText(details.eligibility) || undefined,
@@ -521,6 +546,13 @@ async function enrichGrants(page: Page, grants: IdoxGrant[]): Promise<IdoxGrant[
         contactInfo: sanitizeText(details.contactInfo) || undefined,
         areaOfWork: sanitizeText(details.areaOfWork) || grant.areaOfWork,
         additionalInfo: sanitizeText(details.additionalInfo) || undefined,
+      }
+      enrichedGrants.push(enrichedGrant)
+
+      // Emit grant event for SSE streaming (allows frontend to display grants as they arrive)
+      onProgress?.({
+        type: 'grant',
+        data: enrichedGrant,
       })
 
       // Small delay to be polite to the server
@@ -535,4 +567,189 @@ async function enrichGrants(page: Page, grants: IdoxGrant[]): Promise<IdoxGrant[
 
   console.log(`Enrichment complete: ${enrichedGrants.length} grants processed`)
   return enrichedGrants
+}
+
+/**
+ * Scrape Idox grants with progress streaming support
+ * Same as scrapeIdoxGrants but emits progress events for SSE
+ */
+export async function scrapeIdoxGrantsWithProgress(
+  options: ScrapeOptions = {},
+  onProgress?: ProgressCallback
+): Promise<IdoxScrapeResult> {
+  const { enrich = false } = options
+  const startTime = Date.now()
+  let browser: Browser | null = null
+
+  try {
+    if (!IDOX_USERNAME || !IDOX_PASSWORD) {
+      throw new Error('IDOX_USERNAME and IDOX_PASSWORD environment variables required')
+    }
+
+    // Emit phase: launching
+    onProgress?.({
+      type: 'phase',
+      data: { phase: 'launching', message: 'Launching browser...' },
+    })
+
+    console.log('Launching browser...')
+    console.log(`Using credentials: ${IDOX_USERNAME.substring(0, 5)}...`)
+    console.log(`Enrich mode: ${enrich}`)
+
+    browser = await chromium.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox']
+    })
+
+    const context = await browser.newContext({
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    })
+    const page = await context.newPage()
+    page.setDefaultTimeout(10000)
+
+    // Emit phase: logging in
+    onProgress?.({
+      type: 'phase',
+      data: { phase: 'login', message: 'Logging into Idox portal...' },
+    })
+
+    console.log('Navigating to Idox portal...')
+    await page.goto(IDOX_URL, { waitUntil: 'networkidle', timeout: 30000 })
+
+    // Handle cookie consent if present
+    try {
+      const cookieButton = page.locator('button.ccc-accept-button, #ccc-accept-settings, [data-ccc-action="accept"]')
+      if (await cookieButton.isVisible({ timeout: 3000 })) {
+        console.log('Accepting cookies...')
+        await cookieButton.click()
+        await page.waitForTimeout(1000)
+      }
+    } catch {
+      console.log('No cookie banner found, continuing...')
+    }
+
+    // Login
+    console.log('Logging in...')
+    await page.waitForSelector('#LogOnEmail', { timeout: 10000 })
+
+    await page.fill('#LogOnEmail', '')
+    await page.fill('#LogOnEmail', IDOX_USERNAME)
+    await page.fill('#LogOnPassword', '')
+    await page.fill('#LogOnPassword', IDOX_PASSWORD)
+
+    console.log('Clicking login button...')
+
+    await Promise.all([
+      page.click('input[type="submit"][value="Log in"]'),
+      Promise.race([
+        page.waitForURL('**/Home**', { timeout: 30000 }).catch(() => null),
+        page.waitForSelector('a:has-text("Search for funding")', { timeout: 30000 }).catch(() => null),
+        page.waitForTimeout(5000),
+      ])
+    ])
+
+    const currentUrl = page.url()
+    console.log(`Current URL after login: ${currentUrl}`)
+
+    const stillOnLogin = await page.locator('#LogOnEmail').isVisible().catch(() => false)
+    if (stillOnLogin) {
+      const errorMsg = await page.locator('.validation-summary-errors').textContent().catch(() => '')
+      throw new Error(`Login failed. Error: ${errorMsg || 'Unknown'}`)
+    }
+
+    console.log('Logged in successfully')
+
+    // Emit phase: searching
+    onProgress?.({
+      type: 'phase',
+      data: { phase: 'searching', message: 'Searching for grants...' },
+    })
+
+    // Navigate to search
+    console.log('Looking for Search for funding link...')
+    const searchLink = page.locator('a:has-text("Search for funding")').first()
+
+    if (await searchLink.isVisible({ timeout: 5000 })) {
+      console.log('Navigating to funding search...')
+      await searchLink.click()
+      await page.waitForLoadState('networkidle', { timeout: 30000 })
+    }
+
+    console.log(`Now at: ${page.url()}`)
+
+    // Apply filters
+    console.log('Applying filters...')
+    for (const status of STATUS_FILTERS) {
+      try {
+        const checkbox = page.locator(`label:has-text("${status}") input`).first()
+        if (await checkbox.isVisible({ timeout: 1000 })) {
+          await checkbox.check()
+        }
+      } catch { /* skip */ }
+    }
+
+    // Submit search
+    console.log('Submitting search...')
+    try {
+      const searchButton = page.locator('button.siteSearchFilter').first()
+      if (await searchButton.isVisible({ timeout: 2000 })) {
+        await searchButton.click()
+        await page.waitForLoadState('networkidle', { timeout: 30000 })
+      }
+    } catch { /* continue without clicking */ }
+
+    // Emit phase: extracting
+    onProgress?.({
+      type: 'phase',
+      data: { phase: 'extracting', message: 'Extracting grants from search results...' },
+    })
+
+    console.log(`Search results at: ${page.url()}`)
+    console.log('Extracting grants...')
+    let grants = await extractGrantsSimple(page)
+
+    // Emit grants found
+    onProgress?.({
+      type: 'phase',
+      data: {
+        phase: 'extracted',
+        message: `Found ${grants.length} grants`,
+        grantsFound: grants.length,
+      },
+    })
+
+    // Enrich grants with detail page data if requested
+    if (enrich && grants.length > 0) {
+      onProgress?.({
+        type: 'phase',
+        data: {
+          phase: 'enriching_start',
+          message: `Starting enrichment of ${grants.length} grants...`,
+          totalGrants: grants.length,
+        },
+      })
+
+      console.log(`Enriching ${grants.length} grants with detail page data...`)
+      grants = await enrichGrants(page, grants, onProgress)
+    }
+
+    const duration = Date.now() - startTime
+    console.log(`Scrape complete in ${duration}ms - found ${grants.length} grants`)
+
+    return {
+      grants,
+      totalFound: grants.length,
+      filtersUsed: {
+        status: STATUS_FILTERS,
+        areaOfWork: AREA_OF_WORK_FILTERS,
+      },
+      timestamp: new Date().toISOString(),
+      scrapeDurationMs: duration,
+      enriched: enrich,
+    }
+  } finally {
+    if (browser) {
+      await browser.close()
+    }
+  }
 }
