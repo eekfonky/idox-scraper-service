@@ -32,6 +32,32 @@ export interface ScrapeOptions {
   enrich?: boolean
 }
 
+/**
+ * Sanitize text by removing HTML artifacts and normalizing whitespace
+ * Pure string processing - no AI needed
+ */
+function sanitizeText(text: string): string {
+  if (!text) return ''
+
+  return text
+    // Remove HTML tags
+    .replace(/<[^>]*>/g, '')
+    // Decode common HTML entities
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&ndash;/g, '–')
+    .replace(/&mdash;/g, '—')
+    .replace(/&pound;/g, '£')
+    // Collapse multiple whitespace/newlines into single space
+    .replace(/\s+/g, ' ')
+    // Trim leading/trailing whitespace
+    .trim()
+}
+
 // Idox portal configuration
 const IDOX_URL = 'https://funding.idoxopen4community.co.uk/bca'
 const IDOX_USERNAME = process.env.IDOX_USERNAME || ''
@@ -486,14 +512,15 @@ async function enrichGrants(page: Page, grants: IdoxGrant[]): Promise<IdoxGrant[
         }
       })
 
+      // Apply sanitization to clean up HTML artifacts
       enrichedGrants.push({
         ...grant,
-        description: details.description || undefined,
-        eligibility: details.eligibility || undefined,
-        howToApply: details.howToApply || undefined,
-        contactInfo: details.contactInfo || undefined,
-        areaOfWork: details.areaOfWork || grant.areaOfWork,
-        additionalInfo: details.additionalInfo || undefined,
+        description: sanitizeText(details.description) || undefined,
+        eligibility: sanitizeText(details.eligibility) || undefined,
+        howToApply: sanitizeText(details.howToApply) || undefined,
+        contactInfo: sanitizeText(details.contactInfo) || undefined,
+        areaOfWork: sanitizeText(details.areaOfWork) || grant.areaOfWork,
+        additionalInfo: sanitizeText(details.additionalInfo) || undefined,
       })
 
       // Small delay to be polite to the server
