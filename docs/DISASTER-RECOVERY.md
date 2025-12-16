@@ -1,6 +1,6 @@
 # Idox Scraper Service - Disaster Recovery
 
-**Last Updated:** December 2025
+**Last Updated:** 16 December 2025
 
 This document contains all configuration needed to restore the Idox scraper service.
 
@@ -229,22 +229,69 @@ curl https://idox-scraper.srv925321.hstgr.cloud/health
 
 ### GET /api/idox/grants
 Scrape all grants from Idox portal (requires auth)
+
+**Query Parameters:**
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `enrich` | boolean | false | When true, scrapes detail pages for full grant info |
+
+**Basic scrape (~45 seconds):**
 ```bash
 curl -H "Authorization: Bearer idox-scraper-wlpp-2025-secure-key-p4n8q1" \
   https://idox-scraper.srv925321.hstgr.cloud/api/idox/grants
 ```
 
-**Response:**
+**Enriched scrape (~17 minutes for 500+ grants):**
+```bash
+curl -H "Authorization: Bearer idox-scraper-wlpp-2025-secure-key-p4n8q1" \
+  "https://idox-scraper.srv925321.hstgr.cloud/api/idox/grants?enrich=true"
+```
+
+**Response (basic):**
 ```json
 {
-  "grants": [...],
+  "grants": [{
+    "title": "Example Grant",
+    "funder": "Example Funder",
+    "maxAmount": "£ 50,000",
+    "deadline": "15/12/2025",
+    "status": "Open for Applications",
+    "link": "https://funding.idoxopen4community.co.uk/...",
+    "areaOfWork": ""
+  }],
   "totalFound": 511,
+  "enriched": false,
   "filtersUsed": {
     "status": ["Open for Applications", "Future"],
     "areaOfWork": [...]
   },
   "timestamp": "2025-12-15T23:30:00.000Z",
   "scrapeDurationMs": 47000
+}
+```
+
+**Response (enriched) - additional fields per grant:**
+```json
+{
+  "grants": [{
+    "title": "Example Grant",
+    "funder": "Example Funder",
+    "maxAmount": "£ 50,000",
+    "deadline": "15/12/2025",
+    "status": "Open for Applications",
+    "link": "https://funding.idoxopen4community.co.uk/...",
+    "areaOfWork": "",
+    "description": "Full grant description from detail page...",
+    "eligibility": "Eligibility criteria...",
+    "howToApply": "Application instructions...",
+    "contactInfo": "Contact details...",
+    "additionalInfo": "Any additional information..."
+  }],
+  "totalFound": 511,
+  "enriched": true,
+  "filtersUsed": {...},
+  "timestamp": "2025-12-16T00:28:02.933Z",
+  "scrapeDurationMs": 1063033
 }
 ```
 
