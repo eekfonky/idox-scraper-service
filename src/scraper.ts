@@ -8,6 +8,12 @@ export interface IdoxGrant {
   status: string
   link: string
   areaOfWork: string
+  // Enriched fields (only populated when enrich=true)
+  description?: string
+  eligibility?: string
+  howToApply?: string
+  contactInfo?: string
+  additionalInfo?: string
 }
 
 export interface IdoxScrapeResult {
@@ -19,6 +25,11 @@ export interface IdoxScrapeResult {
   }
   timestamp: string
   scrapeDurationMs: number
+  enriched: boolean
+}
+
+export interface ScrapeOptions {
+  enrich?: boolean
 }
 
 // Idox portal configuration
@@ -40,7 +51,8 @@ const AREA_OF_WORK_FILTERS = [
 
 const STATUS_FILTERS = ['Open for Applications', 'Future']
 
-export async function scrapeIdoxGrants(): Promise<IdoxScrapeResult> {
+export async function scrapeIdoxGrants(options: ScrapeOptions = {}): Promise<IdoxScrapeResult> {
+  const { enrich = false } = options
   const startTime = Date.now()
   let browser: Browser | null = null
 
@@ -51,6 +63,7 @@ export async function scrapeIdoxGrants(): Promise<IdoxScrapeResult> {
 
     console.log('Launching browser...')
     console.log(`Using credentials: ${IDOX_USERNAME.substring(0, 5)}...`)
+    console.log(`Enrich mode: ${enrich}`)
     
     browser = await chromium.launch({
       headless: true,
@@ -149,7 +162,13 @@ export async function scrapeIdoxGrants(): Promise<IdoxScrapeResult> {
 
     // Extract grants using simple approach
     console.log('Extracting grants...')
-    const grants = await extractGrantsSimple(page)
+    let grants = await extractGrantsSimple(page)
+
+    // Enrich grants with detail page data if requested
+    if (enrich && grants.length > 0) {
+      console.log(`Enriching ${grants.length} grants with detail page data...`)
+      grants = await enrichGrants(page, grants)
+    }
 
     const duration = Date.now() - startTime
     console.log(`Scrape complete in ${duration}ms - found ${grants.length} grants`)
@@ -163,6 +182,7 @@ export async function scrapeIdoxGrants(): Promise<IdoxScrapeResult> {
       },
       timestamp: new Date().toISOString(),
       scrapeDurationMs: duration,
+      enriched: enrich,
     }
   } finally {
     if (browser) {
@@ -368,4 +388,124 @@ async function extractGrantsSimple(page: Page): Promise<IdoxGrant[]> {
 
   console.log(`Total grants extracted: ${allGrants.length}`)
   return allGrants
+}
+
+// Enrich grants by scraping their detail pages
+async function enrichGrants(page: Page, grants: IdoxGrant[]): Promise<IdoxGrant[]> {
+  const enrichedGrants: IdoxGrant[] = []
+  const totalGrants = grants.length
+
+  for (let i = 0; i < grants.length; i++) {
+    const grant = grants[i]
+    const progress = `[${i + 1}/${totalGrants}]`
+
+    try {
+      console.log(`${progress} Enriching: ${grant.title.substring(0, 50)}...`)
+
+      // Navigate to detail page
+      await page.goto(grant.link, { waitUntil: 'networkidle', timeout: 30000 })
+
+      // Extract detailed information from the page
+      const details = await page.evaluate(() => {
+        const getText = (selector: string): string => {
+          const el = document.querySelector(selector)
+          return el?.textContent?.trim() || ''
+        }
+
+        const getTextAfterHeading = (headingText: string): string => {
+          const headings = Array.from(document.querySelectorAll('h2, h3, h4, dt, strong'))
+          for (const heading of headings) {
+            if (heading.textContent?.toLowerCase().includes(headingText.toLowerCase())) {
+              // Get next sibling or parent's next sibling content
+              let next = heading.nextElementSibling
+              if (next) {
+                return next.textContent?.trim() || ''
+              }
+              // Try getting content from definition list
+              if (heading.tagName === 'DT') {
+                const dd = heading.nextElementSibling
+                if (dd?.tagName === 'DD') {
+                  return dd.textContent?.trim() || ''
+                }
+              }
+            }
+          }
+          return ''
+        }
+
+        // Try to find main content sections
+        const mainContent = document.querySelector('main, .content, article, #content')
+        const fullText = mainContent?.textContent || document.body.textContent || ''
+
+        // Extract specific sections
+        const description = getTextAfterHeading('description') ||
+                           getTextAfterHeading('about') ||
+                           getTextAfterHeading('summary') ||
+                           getTextAfterHeading('overview')
+
+        const eligibility = getTextAfterHeading('eligibility') ||
+                           getTextAfterHeading('who can apply') ||
+                           getTextAfterHeading('eligible')
+
+        const howToApply = getTextAfterHeading('how to apply') ||
+                          getTextAfterHeading('application') ||
+                          getTextAfterHeading('apply')
+
+        const contactInfo = getTextAfterHeading('contact') ||
+                           getTextAfterHeading('enquiries')
+
+        // Get areas of work if available
+        const areasOfWork: string[] = []
+        const areaLabels = document.querySelectorAll('.tag, .category, [class*="area"], [class*="tag"]')
+        areaLabels.forEach(el => {
+          const text = el.textContent?.trim()
+          if (text && text.length < 50) {
+            areasOfWork.push(text)
+          }
+        })
+
+        // Also look in definition lists for area of work
+        const dts = document.querySelectorAll('dt')
+        dts.forEach(dt => {
+          if (dt.textContent?.toLowerCase().includes('area')) {
+            const dd = dt.nextElementSibling
+            if (dd?.tagName === 'DD') {
+              const areas = dd.textContent?.split(',').map(s => s.trim()).filter(Boolean) || []
+              areasOfWork.push(...areas)
+            }
+          }
+        })
+
+        return {
+          description: description.substring(0, 2000),
+          eligibility: eligibility.substring(0, 2000),
+          howToApply: howToApply.substring(0, 1000),
+          contactInfo: contactInfo.substring(0, 500),
+          areaOfWork: [...new Set(areasOfWork)].join(', '),
+          additionalInfo: fullText.substring(0, 500)
+        }
+      })
+
+      enrichedGrants.push({
+        ...grant,
+        description: details.description || undefined,
+        eligibility: details.eligibility || undefined,
+        howToApply: details.howToApply || undefined,
+        contactInfo: details.contactInfo || undefined,
+        areaOfWork: details.areaOfWork || grant.areaOfWork,
+        additionalInfo: details.additionalInfo || undefined,
+      })
+
+      // Small delay to be polite to the server
+      await page.waitForTimeout(500)
+
+    } catch (error) {
+      console.log(`${progress} Failed to enrich ${grant.title}: ${error}`)
+      // Keep the original grant without enrichment
+      enrichedGrants.push(grant)
+    }
+  }
+
+  console.log(`Enrichment complete: ${enrichedGrants.length} grants processed`)
+  return enrichedGrants
 }

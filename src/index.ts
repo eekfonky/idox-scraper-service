@@ -45,17 +45,20 @@ app.get('/health', (_req: Request, res: Response) => {
 })
 
 // Scrape endpoint (requires auth)
-app.get('/api/idox/grants', authenticateApiKey, async (_req: Request, res: Response) => {
-  console.log(`[${new Date().toISOString()}] Starting Idox scrape...`)
-  
+// Query params:
+//   enrich=true - Scrape detail pages for full grant info (slower, ~10min for 500 grants)
+app.get('/api/idox/grants', authenticateApiKey, async (req: Request, res: Response) => {
+  const enrich = req.query.enrich === 'true'
+  console.log(`[${new Date().toISOString()}] Starting Idox scrape (enrich=${enrich})...`)
+
   try {
-    const result = await scrapeIdoxGrants()
-    console.log(`[${new Date().toISOString()}] Scrape complete: ${result.totalFound} grants found`)
+    const result = await scrapeIdoxGrants({ enrich })
+    console.log(`[${new Date().toISOString()}] Scrape complete: ${result.totalFound} grants found (enriched=${result.enriched})`)
     res.json(result)
   } catch (error) {
     console.error(`[${new Date().toISOString()}] Scrape error:`, error)
-    res.status(500).json({ 
-      error: 'Scrape failed', 
+    res.status(500).json({
+      error: 'Scrape failed',
       message: error instanceof Error ? error.message : 'Unknown error'
     })
   }
