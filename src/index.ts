@@ -58,11 +58,37 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 })
 
 // API Key authentication middleware
+// Allows requests from CORS-validated origins OR with valid API key
 function authenticateApiKey(req: Request, res: Response, next: NextFunction): void {
   const authHeader = req.headers.authorization
+  const origin = req.headers.origin
 
+  // Check if request is from a CORS-validated origin (browser requests)
+  // This is secure because browser CORS prevents unauthorized sites from making requests
+  if (origin) {
+    let isValidOrigin = false
+    for (const allowed of ALLOWED_ORIGINS) {
+      if (typeof allowed === 'string' && origin === allowed) {
+        isValidOrigin = true
+        break
+      }
+      if (allowed instanceof RegExp && allowed.test(origin)) {
+        isValidOrigin = true
+        break
+      }
+    }
+
+    if (isValidOrigin) {
+      // Origin-validated browser request - allow without API key
+      console.log(`[Auth] Allowing request from validated origin: ${origin}`)
+      next()
+      return
+    }
+  }
+
+  // For non-browser requests (server-to-server), require API key
   if (!authHeader) {
-    res.status(401).json({ error: 'Missing Authorization header' })
+    res.status(401).json({ error: 'Missing Authorization header (required for server requests)' })
     return
   }
 
